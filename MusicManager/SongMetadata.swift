@@ -2177,7 +2177,12 @@ extension SongMetadata {
         Logger.shared.log("[SongMetadata] Performing full Apple Music fetch for: \(song.artist) - \(song.title)")
         let query = "\(song.artist) \(song.title)"
 
-        if let amsMatch = await AppleMusicAPI.shared.searchSong(query: query, albumHint: song.album) {
+        if let amsMatch = await AppleMusicAPI.shared.searchSong(
+            query: query,
+            titleHint: song.title,
+            artistHint: song.artist,
+            albumHint: song.album
+        ) {
             let enriched = await applyAppleMusicMatch(amsMatch, to: song)
             Logger.shared.log("[SongMetadata] ✓ Apple Music match (\(enriched.appleMetadataMatchTier)): \(enriched.title) (\(enriched.storeId))")
             return enriched
@@ -2204,7 +2209,12 @@ extension SongMetadata {
         let query = "\(song.artist) \(song.title)"
         Logger.shared.log("[SongMetadata] 🔍 Shadow-searching Apple Music for rich metadata: '\(query)'")
 
-        if let amsMatch = await AppleMusicAPI.shared.searchSong(query: query, albumHint: song.album) {
+        if let amsMatch = await AppleMusicAPI.shared.searchSong(
+            query: query,
+            titleHint: song.title,
+            artistHint: song.artist,
+            albumHint: song.album
+        ) {
             Logger.shared.log("[SongMetadata] ✨ Found Apple Music Server Match: \(amsMatch.attributes.name) by \(amsMatch.attributes.artistName) (ID: \(amsMatch.id))")
             let enriched = await applyAppleMusicMatch(amsMatch, to: song)
             Logger.shared.log("[SongMetadata] ✨ Rich Apple metadata tier: \(enriched.appleMetadataMatchTier) for \(enriched.title)")
@@ -2793,7 +2803,12 @@ actor AppleMusicAPI {
         return await searchSongsViaPublicSearch(query: query, limit: limit, offset: offset)
     }
 
-    func searchSong(query: String, albumHint: String? = nil) async -> AppleMusicSong? {
+    func searchSong(
+        query: String,
+        titleHint: String? = nil,
+        artistHint: String? = nil,
+        albumHint: String? = nil
+    ) async -> AppleMusicSong? {
         let candidates: [AppleMusicSong]
         if let albumHint, !albumHint.isEmpty, albumHint != "Unknown Album" {
             candidates = await searchSongs(query: query, limit: 5, offset: 0)
@@ -2801,7 +2816,12 @@ actor AppleMusicAPI {
             candidates = await searchSongs(query: query, limit: 1, offset: 0)
         }
 
-        guard let song = Self.bestMatch(for: candidates, albumHint: albumHint) else {
+        guard let song = Self.bestMatch(
+            for: candidates,
+            titleHint: titleHint,
+            artistHint: artistHint,
+            albumHint: albumHint
+        ) else {
             return nil
         }
 
@@ -2816,21 +2836,67 @@ actor AppleMusicAPI {
         return song
     }
 
-    private static func bestMatch(for candidates: [AppleMusicSong], albumHint: String?) -> AppleMusicSong? {
-        guard let albumHint, !albumHint.isEmpty, albumHint != "Unknown Album" else {
+    private static func bestMatch(
+        for candidates: [AppleMusicSong],
+        titleHint: String?,
+        artistHint: String?,
+        albumHint: String?
+    ) -> AppleMusicSong? {
+        let normalizedTitleHint = normalizedCatalogMatchValue(titleHint)
+        let normalizedArtistHint = normalizedCatalogMatchValue(artistHint)
+        let normalizedAlbumHint = normalizedCatalogMatchValue(albumHint)
+
+        guard normalizedTitleHint != nil || normalizedArtistHint != nil || normalizedAlbumHint != nil else {
             return candidates.first
         }
 
-        let normalizedHint = albumHint.lowercased().filter { !$0.isPunctuation }
-        if let albumMatch = candidates.first(where: { candidate in
-            guard let candidateAlbum = candidate.attributes.albumName else { return false }
-            let normalizedCandidate = candidateAlbum.lowercased().filter { !$0.isPunctuation }
-            return normalizedCandidate.contains(normalizedHint) || normalizedHint.contains(normalizedCandidate)
-        }) {
-            return albumMatch
+        let scoredCandidates = candidates.compactMap { candidate -> (song: AppleMusicSong, score: Int)? in
+            let candidateTitle = normalizedCatalogMatchValue(candidate.attributes.name)
+            let candidateArtist = normalizedCatalogMatchValue(candidate.attributes.artistName)
+            let candidateAlbum = normalizedCatalogMatchValue(candidate.attributes.albumName)
+
+            guard catalogValuesMatch(normalizedTitleHint, candidateTitle) else { return nil }
+            guard catalogValuesMatch(normalizedArtistHint, candidateArtist) else { return nil }
+
+            if let normalizedAlbumHint, let candidateAlbum,
+               !catalogValuesMatch(normalizedAlbumHint, candidateAlbum) {
+                return nil
+            }
+
+            var score = 0
+            if normalizedTitleHint == candidateTitle { score += 4 } else { score += 2 }
+            if normalizedArtistHint == candidateArtist { score += 4 } else { score += 2 }
+            if let normalizedAlbumHint, let candidateAlbum {
+                score += normalizedAlbumHint == candidateAlbum ? 4 : 2
+            }
+            return (candidate, score)
         }
 
-        return candidates.first
+        return scoredCandidates.max(by: { $0.score < $1.score })?.song
+    }
+
+    private static func normalizedCatalogMatchValue(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let normalized = value
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .lowercased()
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty,
+              normalized != "unknown artist",
+              normalized != "unknown album",
+              normalized != "unknown title" else {
+            return nil
+        }
+        return normalized
+    }
+
+    private static func catalogValuesMatch(_ expected: String?, _ candidate: String?) -> Bool {
+        guard let expected else { return true }
+        guard let candidate else { return false }
+        return expected == candidate || expected.contains(candidate) || candidate.contains(expected)
     }
 
     func fetchSong(id: String, urlHint: String? = nil) async -> AppleMusicSong? {

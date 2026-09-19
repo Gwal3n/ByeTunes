@@ -943,6 +943,7 @@ class MediaLibraryBuilder {
             
             
             if song.artworkData != nil {
+                let shouldBindAlbumArtwork = !processedAlbumArtworkPids.contains(albumPid)
                 
                 let artToken = "\(itemPid)"
                 
@@ -1003,21 +1004,23 @@ class MediaLibraryBuilder {
                         )
                     """)
                     
-                    try executeSQL(db, """
-                        INSERT OR REPLACE INTO artwork_token (
-                            artwork_token, artwork_source_type, artwork_type, entity_pid, entity_type, artwork_variant_type
-                        ) VALUES (
-                            '\(artToken)', 1, 1, \(albumPid), 1, 0
-                        )
-                    """)
-                    
-                    try executeSQL(db, """
-                        INSERT OR REPLACE INTO artwork_token (
-                            artwork_token, artwork_source_type, artwork_type, entity_pid, entity_type, artwork_variant_type
-                        ) VALUES (
-                            '\(artToken)', 1, 1, \(albumPid), 4, 0
-                        )
-                    """)
+                    if shouldBindAlbumArtwork {
+                        try executeSQL(db, """
+                            INSERT OR REPLACE INTO artwork_token (
+                                artwork_token, artwork_source_type, artwork_type, entity_pid, entity_type, artwork_variant_type
+                            ) VALUES (
+                                '\(artToken)', 1, 1, \(albumPid), 1, 0
+                            )
+                        """)
+
+                        try executeSQL(db, """
+                            INSERT OR REPLACE INTO artwork_token (
+                                artwork_token, artwork_source_type, artwork_type, entity_pid, entity_type, artwork_variant_type
+                            ) VALUES (
+                                '\(artToken)', 1, 1, \(albumPid), 4, 0
+                            )
+                        """)
+                    }
                     
                     try executeSQL(db, """
                         INSERT OR REPLACE INTO artwork_token (
@@ -1035,21 +1038,23 @@ class MediaLibraryBuilder {
                         )
                     """)
                     
-                    try executeSQL(db, """
-                        INSERT OR REPLACE INTO artwork_token (
-                            artwork_token, artwork_source_type, artwork_type, entity_pid, entity_type
-                        ) VALUES (
-                            '\(artToken)', 1, 1, \(albumPid), 1
-                        )
-                    """)
-                    
-                    try executeSQL(db, """
-                        INSERT OR REPLACE INTO artwork_token (
-                            artwork_token, artwork_source_type, artwork_type, entity_pid, entity_type
-                        ) VALUES (
-                            '\(artToken)', 1, 1, \(albumPid), 4
-                        )
-                    """)
+                    if shouldBindAlbumArtwork {
+                        try executeSQL(db, """
+                            INSERT OR REPLACE INTO artwork_token (
+                                artwork_token, artwork_source_type, artwork_type, entity_pid, entity_type
+                            ) VALUES (
+                                '\(artToken)', 1, 1, \(albumPid), 1
+                            )
+                        """)
+
+                        try executeSQL(db, """
+                            INSERT OR REPLACE INTO artwork_token (
+                                artwork_token, artwork_source_type, artwork_type, entity_pid, entity_type
+                            ) VALUES (
+                                '\(artToken)', 1, 1, \(albumPid), 4
+                            )
+                        """)
+                    }
                     
                     try executeSQL(db, """
                         INSERT OR REPLACE INTO artwork_token (
@@ -1073,7 +1078,7 @@ class MediaLibraryBuilder {
                             \(itemPid), 0, 1, '\(artToken)', '', 0, 0
                         )
                     """)
-                    if !processedAlbumArtworkPids.contains(albumPid) {
+                    if shouldBindAlbumArtwork {
                         try executeSQL(db, """
                             INSERT OR REPLACE INTO best_artwork_token (
                                 entity_pid, entity_type, artwork_type, available_artwork_token, fetchable_artwork_token, 
@@ -1108,7 +1113,7 @@ class MediaLibraryBuilder {
                             \(itemPid), 0, 1, '\(artToken)', '', 0
                         )
                     """)
-                    if !processedAlbumArtworkPids.contains(albumPid) {
+                    if shouldBindAlbumArtwork {
                         try executeSQL(db, """
                             INSERT OR REPLACE INTO best_artwork_token (
                                 entity_pid, entity_type, artwork_type, available_artwork_token, fetchable_artwork_token, 
@@ -1136,10 +1141,6 @@ class MediaLibraryBuilder {
                     """)
                 }
                 
-                if !processedAlbumArtworkPids.contains(albumPid) {
-                    processedAlbumArtworkPids.insert(albumPid)
-                }
-
                 if supportsLocalArtworkSource {
                     try executeSQL(db, """
                         INSERT OR REPLACE INTO artwork (
@@ -1168,24 +1169,30 @@ class MediaLibraryBuilder {
                         )
                     """)
 
-                    try executeSQL(db, """
-                        INSERT OR REPLACE INTO artwork_token (
-                            artwork_token, artwork_source_type, artwork_type, entity_pid, entity_type, artwork_variant_type
-                        ) VALUES (
-                            '\(artToken)', 300, 6, \(albumPid), 4, 0
-                        )
-                    """)
+                    if shouldBindAlbumArtwork {
+                        try executeSQL(db, """
+                            INSERT OR REPLACE INTO artwork_token (
+                                artwork_token, artwork_source_type, artwork_type, entity_pid, entity_type, artwork_variant_type
+                            ) VALUES (
+                                '\(artToken)', 300, 6, \(albumPid), 4, 0
+                            )
+                        """)
 
-                    try executeSQL(db, """
-                        INSERT OR REPLACE INTO best_artwork_token (
-                            entity_pid, entity_type, artwork_type, available_artwork_token, fetchable_artwork_token,
-                            fetchable_artwork_source_type, artwork_variant_type
-                        ) VALUES (
-                            \(albumPid), 4, 6, '\(artToken)', '', 0, 0
-                        )
-                    """)
+                        try executeSQL(db, """
+                            INSERT OR REPLACE INTO best_artwork_token (
+                                entity_pid, entity_type, artwork_type, available_artwork_token, fetchable_artwork_token,
+                                fetchable_artwork_source_type, artwork_variant_type
+                            ) VALUES (
+                                \(albumPid), 4, 6, '\(artToken)', '', 0, 0
+                            )
+                        """)
+                    }
 
                     Logger.shared.log("[MediaLibraryBuilder] Added local artwork source 300 bindings for iOS 26 display")
+                }
+
+                if shouldBindAlbumArtwork {
+                    processedAlbumArtworkPids.insert(albumPid)
                 }
             }
             

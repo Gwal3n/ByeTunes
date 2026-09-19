@@ -1,0 +1,111 @@
+name: Build unsigned IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-unsigned-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IDEVICE_REVISION: d32c8189c51c2789496b0768039419c3705498c3
+  IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 60
+
+    steps:
+      - name: Check out ByeTunes
+        uses: actions/checkout@v6
+
+      - name: Select Xcode
+        run: sudo xcode-select --switch /Applications/Xcode_26.3.app/Contents/Developer
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-idevice-${{ env.IDEVICE_REVISION }}-${{ hashFiles('MusicManager/IDEVICE_FFI_BUILD.md') }}
+
+      - name: Build idevice FFI for iOS
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup target add aarch64-apple-ios
+          git clone https://github.com/jkcoxson/idevice.git .build/idevice
+          git -C .build/idevice checkout "$IDEVICE_REVISION"
+          export BINDGEN_EXTRA_CLANG_ARGS="--sysroot=$(xcrun --sdk iphoneos --show-sdk-path)"
+          export RUSTFLAGS="-C link-arg=-miphoneos-version-min=$IPHONEOS_DEPLOYMENT_TARGET"
+          cargo build \
+            --manifest-path .build/idevice/Cargo.toml \
+            --release \
+            --locked \
+            --package idevice-ffi \
+            --target aarch64-apple-ios \
+            --features obfuscate
+          cp .build/idevice/ffi/idevice.h MusicManager/idevice.h
+          cp .build/idevice/target/aarch64-apple-ios/release/libidevice_ffi.a MusicManager/libidevice_ffi.a
+          printf '#import "idevice.h"\n' > MusicManager/Bridging-Header.h
+
+      - name: Create app configuration
+        shell: bash
+        env:
+          BYETUNES_API_URL: ${{ vars.BYETUNES_API_URL }}
+        run: |
+          set -euo pipefail
+          API_URL="${BYETUNES_API_URL:-https://127.0.0.1}"
+          plutil -create xml1 MusicManager/Config.plist
+          plutil -insert ByeTunesApiUrl -string "$API_URL" MusicManager/Config.plist
+
+      - name: Build app without signing
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project MusicManager.xcodeproj \
+            -target MusicManager \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY= \
+            build | tee "$RUNNER_TEMP/xcodebuild.log"
+
+      - name: Package unsigned IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/ByeTunes.app"
+          test -d "$APP_PATH"
+          mkdir -p "$RUNNER_TEMP/Payload"
+          ditto "$APP_PATH" "$RUNNER_TEMP/Payload/ByeTunes.app"
+          ditto -c -k --sequesterRsrc --keepParent "$RUNNER_TEMP/Payload" "$RUNNER_TEMP/ByeTunes-unsigned.ipa"
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v6
+        with:
+          name: ByeTunes-unsigned-${{ github.sha }}
+          path: ${{ runner.temp }}/ByeTunes-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v6
+        with:
+          name: xcodebuild-log-${{ github.sha }}
+          path: ${{ runner.temp }}/xcodebuild.log
+          if-no-files-found: ignore
+          retention-days: 7

@@ -1887,6 +1887,29 @@ enum DownloadError: LocalizedError {
 }
 
 enum DownloadSupport {
+    static func isTransientDownloadError(_ error: Error) -> Bool {
+        if let downloadError = error as? DownloadError {
+            switch downloadError {
+            case .httpError(let statusCode, _):
+                return statusCode == 408 || statusCode == 425 || statusCode == 429 || (500...599).contains(statusCode)
+            case .emptyResponse:
+                return true
+            case .invalidURL, .searchFailed, .mappingFailed, .remoteFailure, .fileSaveFailed:
+                return false
+            }
+        }
+
+        let urlError = error as? URLError
+        switch urlError?.code {
+        case .timedOut, .cannotFindHost, .cannotConnectToHost, .networkConnectionLost,
+             .dnsLookupFailed, .notConnectedToInternet, .internationalRoamingOff,
+             .callIsActive, .dataNotAllowed, .backgroundSessionWasDisconnected:
+            return true
+        default:
+            return false
+        }
+    }
+
     static func fileExtension(for mimeType: String?, fallback: String) -> String {
         guard let type = mimeType?.lowercased() else { return fallback }
         if type.contains("opus") { return "opus" }
@@ -4473,36 +4496,46 @@ final class DownloadViewModel: ObservableObject {
             guard !Task.isCancelled else {
                 throw CancellationError()
             }
-            do {
-                let candidateFallbackExtension = DownloadSupport.fallbackExtension(
-                    forRequestedFormat: candidate.requestedFormat,
-                    defaultingTo: fallbackExtension
-                )
-                let fileURL: URL
-                if let customDownload = candidate.customDownload {
-                    fileURL = try await customDownload(trackID, suggestedName, candidateFallbackExtension)
-                } else if let request = candidate.request {
-                    fileURL = try await executeDownloadRequest(
-                        request,
-                        trackID: trackID,
-                        backendLabel: candidate.label,
-                        suggestedName: suggestedName,
-                        fallbackExtension: candidateFallbackExtension,
-                        requestedFormat: candidate.requestedFormat
+            let maximumAttempts = 2
+            for attempt in 1...maximumAttempts {
+                do {
+                    let candidateFallbackExtension = DownloadSupport.fallbackExtension(
+                        forRequestedFormat: candidate.requestedFormat,
+                        defaultingTo: fallbackExtension
                     )
-                } else {
-                    throw DownloadError.mappingFailed("No usable backend request was created for \(candidate.label).")
+                    let fileURL: URL
+                    if let customDownload = candidate.customDownload {
+                        fileURL = try await customDownload(trackID, suggestedName, candidateFallbackExtension)
+                    } else if let request = candidate.request {
+                        fileURL = try await executeDownloadRequest(
+                            request,
+                            trackID: trackID,
+                            backendLabel: candidate.label,
+                            suggestedName: suggestedName,
+                            fallbackExtension: candidateFallbackExtension,
+                            requestedFormat: candidate.requestedFormat
+                        )
+                    } else {
+                        throw DownloadError.mappingFailed("No usable backend request was created for \(candidate.label).")
+                    }
+                    log("\(candidate.label) backend succeeded.")
+                    BackendHealthStore.shared.recordSuccess(label: candidate.label)
+                    return BackendDownloadOutcome(fileURL: fileURL, backendLabel: candidate.label)
+                } catch {
+                    if Task.isCancelled {
+                        throw error
+                    }
+                    lastError = error
+                    let shouldRetry = attempt < maximumAttempts && DownloadSupport.isTransientDownloadError(error)
+                    if shouldRetry {
+                        log("\(candidate.label) transient failure on attempt \(attempt)/\(maximumAttempts): \(error.localizedDescription). Retrying...")
+                        try await Task.sleep(for: .seconds(1))
+                        continue
+                    }
+                    log("\(candidate.label) backend failed after \(attempt) attempt(s): \(error.localizedDescription)")
+                    BackendHealthStore.shared.recordFailure(label: candidate.label, error: error.localizedDescription)
+                    break
                 }
-                log("\(candidate.label) backend succeeded.")
-                BackendHealthStore.shared.recordSuccess(label: candidate.label)
-                return BackendDownloadOutcome(fileURL: fileURL, backendLabel: candidate.label)
-            } catch {
-                if Task.isCancelled {
-                    throw error
-                }
-                lastError = error
-                log("\(candidate.label) backend failed: \(error.localizedDescription)")
-                BackendHealthStore.shared.recordFailure(label: candidate.label, error: error.localizedDescription)
             }
         }
 
@@ -6910,4 +6943,3 @@ private struct AppleMusicPlaylistRelationships: Decodable {
 private struct AppleMusicPlaylistTracksPage: Decodable {
     let data: [AppleMusicAPI.AppleMusicSong]
 }
-
